@@ -41,6 +41,7 @@ export interface HistorySnapshot {
   triggeredEvents: string[]
   collectedCards: string[]
   logs: LogEntry[]
+  eventChoices: Record<string, string>
 }
 
 export const useGameStore = defineStore('game', () => {
@@ -65,6 +66,7 @@ export const useGameStore = defineStore('game', () => {
   const flags = ref<string[]>([])
   const triggeredEvents = ref<string[]>([])
   const collectedCards = ref<string[]>([])
+  const eventChoices = ref<Record<string, string>>({})
   const logs = ref<LogEntry[]>([])
   const history = ref<HistorySnapshot[]>([])
   let logIdCounter = 0
@@ -103,7 +105,8 @@ export const useGameStore = defineStore('game', () => {
       flags: [...flags.value],
       triggeredEvents: [...triggeredEvents.value],
       collectedCards: [...collectedCards.value],
-      logs: JSON.parse(JSON.stringify(logs.value))
+      logs: JSON.parse(JSON.stringify(logs.value)),
+      eventChoices: { ...eventChoices.value }
     })
     if (history.value.length > 100) {
       history.value.shift()
@@ -121,6 +124,7 @@ export const useGameStore = defineStore('game', () => {
     flags.value = [...snapshot.flags]
     triggeredEvents.value = [...snapshot.triggeredEvents]
     collectedCards.value = [...snapshot.collectedCards]
+    eventChoices.value = { ...snapshot.eventChoices }
     logs.value = JSON.parse(JSON.stringify(snapshot.logs))
     history.value = history.value.slice(0, stepIndex)
     addLog('system', `回退到第 ${snapshot.day} 天 ${getTimeLabel(snapshot.timeSlot)}`)
@@ -364,6 +368,10 @@ export const useGameStore = defineStore('game', () => {
   function handleEventChoice(choice: EventChoice) {
     saveHistory()
 
+    if (currentEvent.value) {
+      eventChoices.value[currentEvent.value.id] = choice.id
+    }
+
     choice.effects.forEach(effect => {
       if (effect.affinityChange !== undefined) {
         updateCharacterAffinity(effect.characterId, effect.affinityChange)
@@ -437,6 +445,7 @@ export const useGameStore = defineStore('game', () => {
     flags.value = []
     triggeredEvents.value = []
     collectedCards.value = []
+    eventChoices.value = {}
     logs.value = []
     history.value = []
     logIdCounter = 0
@@ -465,6 +474,7 @@ export const useGameStore = defineStore('game', () => {
     flags,
     triggeredEvents,
     collectedCards,
+    eventChoices,
     logs,
     history,
     currentEvent,

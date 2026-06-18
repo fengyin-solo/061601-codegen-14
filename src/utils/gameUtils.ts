@@ -139,16 +139,28 @@ export function calculateChatAffinity(
 
 export type StoryNodeStatus = 'completed' | 'available' | 'locked' | 'gap'
 
+export type GapDimension = 'time' | 'day_passed' | 'day_future' | 'affinity' | 'character_locked' | 'flags'
+
+export interface StoryGapReason {
+  dimension: GapDimension
+  text: string
+  value?: { current: number | string; required: number | string; delta?: number }
+}
+
 export interface StoryNode {
   eventId: string
   title: string
   characterId: string | undefined
   day: number
+  maxDay?: number
   timeOfDay: TimeOfDay | undefined
   status: StoryNodeStatus
+  chosenChoiceId: string | undefined
+  chosenChoiceText: string | undefined
   choicesMade: string[]
-  choiceTexts: string[]
-  gapReasons: string[]
+  choiceItems: { id: string; text: string; chosen: boolean }[]
+  gapReasons: StoryGapReason[]
+  affinityRequirement?: { min?: number; max?: number; current: number }
 }
 
 export interface CharacterStoryLine {
@@ -157,6 +169,9 @@ export interface CharacterStoryLine {
   avatar: string
   nodes: StoryNode[]
   progress: number
+  gapCount: number
+  lockedCount: number
+  nextAvailableNode: StoryNode | undefined
 }
 
 export interface StoryMapData {
@@ -166,6 +181,7 @@ export interface StoryMapData {
   completedEvents: number
   availableEvents: number
   gapEvents: number
+  lockedEvents: number
 }
 
 function checkEventCondition(
@@ -175,30 +191,60 @@ function checkEventCondition(
   characterStates: { id: string; affinity: number; unlocked: boolean }[],
   triggeredEvents: string[],
   flags: string[]
-): { meets: boolean; reasons: string[] } {
-  const reasons: string[] = []
+): { meets: boolean; reasons: StoryGapReason[] } {
+  const reasons: StoryGapReason[] = []
   const cond = event.triggerCondition
 
   if (cond.minDay !== undefined && currentDay < cond.minDay) {
-    reasons.push(`需第${cond.minDay}天（当前第${currentDay}天）`)
+    reasons.push({
+      dimension: 'day_future',
+      text: `需第${cond.minDay}天（当前第${currentDay}天）`,
+      value: { current: currentDay, required: cond.minDay, delta: cond.minDay - currentDay }
+    })
   }
   if (cond.maxDay !== undefined && currentDay > cond.maxDay) {
-    reasons.push(`已过期限（最晚第${cond.maxDay}天）`)
+    reasons.push({
+      dimension: 'day_passed',
+      text: `已过期限（最晚第${cond.maxDay}天，当前第${currentDay}天）`,
+      value: { current: currentDay, required: cond.maxDay, delta: currentDay - cond.maxDay }
+    })
   }
   if (cond.timeOfDay !== undefined && currentTimeSlot !== cond.timeOfDay) {
-    reasons.push(`需${getTimeLabel(cond.timeOfDay)}`)
+    const onScheduleDay =
+      (cond.minDay === undefined || currentDay >= cond.minDay) &&
+      (cond.maxDay === undefined || currentDay <= cond.maxDay)
+    reasons.push({
+      dimension: 'time',
+      text: onScheduleDay
+        ? `需在${getTimeLabel(cond.timeOfDay)}触发（当前为${getTimeLabel(currentTimeSlot)}）`
+        : `需第${cond.minDay ?? '?'}~${cond.maxDay ?? '?'}天的${getTimeLabel(cond.timeOfDay)}`
+    })
   }
+
+  let affinityInfo: { min?: number; max?: number; current: number } | undefined
 
   if (cond.characterId) {
     const charState = characterStates.find(c => c.id === cond.characterId)
     if (!charState || !charState.unlocked) {
-      reasons.push('角色未解锁')
+      reasons.push({
+        dimension: 'character_locked',
+        text: '该角色尚未解锁'
+      })
     } else {
+      affinityInfo = { min: cond.minAffinity, max: cond.maxAffinity, current: charState.affinity }
       if (cond.minAffinity !== undefined && charState.affinity < cond.minAffinity) {
-        reasons.push(`好感需≥${cond.minAffinity}（当前${charState.affinity}）`)
+        reasons.push({
+          dimension: 'affinity',
+          text: `好感需≥${cond.minAffinity}（当前${charState.affinity}）`,
+          value: { current: charState.affinity, required: cond.minAffinity, delta: cond.minAffinity - charState.affinity }
+        })
       }
       if (cond.maxAffinity !== undefined && charState.affinity > cond.maxAffinity) {
-        reasons.push(`好感需≤${cond.maxAffinity}（当前${charState.affinity}）`)
+        reasons.push({
+          dimension: 'affinity',
+          text: `好感需≤${cond.maxAffinity}（当前${charState.affinity}）`,
+          value: { current: charState.affinity, required: cond.maxAffinity, delta: charState.affinity - cond.maxAffinity }
+        })
       }
     }
   }
@@ -206,7 +252,10 @@ function checkEventCondition(
   if (cond.requiredFlags) {
     const missingFlags = cond.requiredFlags.filter(f => !flags.includes(f))
     if (missingFlags.length > 0) {
-      reasons.push(`缺少标记: ${missingFlags.join(', ')}`)
+      reasons.push({
+        dimension: 'flags',
+        text: `缺少前置标记: ${missingFlags.join(', ')}`
+      })
     }
   }
 
@@ -217,6 +266,35 @@ function checkEventCondition(
   return { meets: reasons.length === 0, reasons }
 }
 
+const TIME_SLOT_ORDER: TimeOfDay[] = ['morning', 'afternoon', 'evening', 'night']
+
+function isTimeWindowDefinitelyPassed(
+  event: GameEventConfig,
+  currentDay: number,
+  currentTimeSlot: TimeOfDay
+): boolean {
+  const cond = event.triggerCondition
+
+  if (cond.maxDay !== undefined && currentDay > cond.maxDay) {
+    return true
+  }
+
+  if (cond.timeOfDay !== undefined && cond.minDay !== undefined && cond.maxDay === cond.minDay) {
+    if (currentDay === cond.minDay) {
+      const needIdx = TIME_SLOT_ORDER.indexOf(cond.timeOfDay)
+      const currIdx = TIME_SLOT_ORDER.indexOf(currentTimeSlot)
+      if (currIdx > needIdx) {
+        return true
+      }
+    }
+    if (currentDay > cond.minDay) {
+      return true
+    }
+  }
+
+  return false
+}
+
 export function buildStoryMap(
   events: GameEventConfig[],
   characters: { id: string; name: string; avatar: string; unlocked: boolean; hidden?: boolean }[],
@@ -225,7 +303,8 @@ export function buildStoryMap(
   characterStates: { id: string; affinity: number; unlocked: boolean }[],
   triggeredEvents: string[],
   collectedCards: string[],
-  flags: string[]
+  flags: string[],
+  eventChoices: Record<string, string>
 ): StoryMapData {
   const characterMap = new Map(characters.map(c => [c.id, c]))
 
@@ -241,6 +320,7 @@ export function buildStoryMap(
   let completedEvents = 0
   let availableEvents = 0
   let gapEvents = 0
+  let lockedEvents = 0
 
   for (const event of events) {
     totalEvents++
@@ -251,42 +331,63 @@ export function buildStoryMap(
     const isCompleted = triggeredEvents.includes(event.id)
     const day = event.triggerCondition.minDay ?? 1
 
+    const chosenId = isCompleted ? eventChoices[event.id] ?? undefined : undefined
+    const chosenChoice = chosenId ? event.choices.find(c => c.id === chosenId) : undefined
+
+    const choiceItems = event.choices.map(c => ({
+      id: c.id,
+      text: c.text,
+      chosen: chosenId === c.id
+    }))
+
     let status: StoryNodeStatus
-    let choicesMade: string[] = []
-    const choiceTexts = event.choices.map(c => c.text)
 
     if (isCompleted) {
       status = 'completed'
       completedEvents++
-    } else if (reasons.some(r => r.includes('已过期限'))) {
-      status = 'gap'
-      gapEvents++
-    } else if (meets) {
-      status = 'available'
-      availableEvents++
-    } else if (reasons.length > 0) {
-      const hasDayPassed = reasons.some(r => r.includes('需第') && r.includes('当前第'))
-      const hasAffinityGap = reasons.some(r => r.includes('好感需'))
-      if (hasDayPassed || hasAffinityGap) {
-        status = 'locked'
-      } else {
+    } else {
+      const timeWindowGone = isTimeWindowDefinitelyPassed(event, currentDay, currentTimeSlot)
+      const hasPassedDayReason = reasons.some(r => r.dimension === 'day_passed')
+
+      if (timeWindowGone || hasPassedDayReason) {
         status = 'gap'
         gapEvents++
+      } else if (meets) {
+        status = 'available'
+        availableEvents++
+      } else {
+        status = 'locked'
+        lockedEvents++
       }
-    } else {
-      status = 'locked'
     }
+
+    const charState = event.triggerCondition.characterId
+      ? characterStates.find(c => c.id === event.triggerCondition.characterId)
+      : undefined
+    const affinityRequirement =
+      event.triggerCondition.characterId &&
+      (event.triggerCondition.minAffinity !== undefined || event.triggerCondition.maxAffinity !== undefined)
+        ? {
+            min: event.triggerCondition.minAffinity,
+            max: event.triggerCondition.maxAffinity,
+            current: charState?.affinity ?? 0
+          }
+        : undefined
 
     const node: StoryNode = {
       eventId: event.id,
       title: event.title,
       characterId: event.characterId,
       day,
+      maxDay: event.triggerCondition.maxDay,
       timeOfDay: event.triggerCondition.timeOfDay,
       status,
-      choicesMade,
-      choiceTexts,
-      gapReasons: status === 'gap' || status === 'locked' ? reasons : []
+      chosenChoiceId: chosenId,
+      chosenChoiceText: chosenChoice?.text,
+      choicesMade: chosenChoice ? [chosenChoice.text] : [],
+      choiceItems,
+      gapReasons: status === 'gap' || status === 'locked' ? reasons : [],
+      affinityRequirement
     }
 
     if (event.characterId && lineMap.has(event.characterId)) {
@@ -306,12 +407,19 @@ export function buildStoryMap(
     nodes.sort((a, b) => a.day - b.day)
     const completed = nodes.filter(n => n.status === 'completed').length
     const progress = nodes.length > 0 ? Math.round((completed / nodes.length) * 100) : 0
+    const gapCount = nodes.filter(n => n.status === 'gap').length
+    const lockedCount = nodes.filter(n => n.status === 'locked').length
+    const nextAvailableNode = nodes.find(n => n.status === 'available')
+
     characterLines.push({
       characterId: char.id,
       characterName: char.name,
       avatar: char.avatar,
       nodes,
-      progress
+      progress,
+      gapCount,
+      lockedCount,
+      nextAvailableNode
     })
   }
 
@@ -323,7 +431,8 @@ export function buildStoryMap(
     totalEvents,
     completedEvents,
     availableEvents,
-    gapEvents
+    gapEvents,
+    lockedEvents
   }
 }
 
