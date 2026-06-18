@@ -11,6 +11,7 @@ import SaveModal from './components/SaveModal.vue'
 import CardCollection from './components/CardCollection.vue'
 import HistoryPanel from './components/HistoryPanel.vue'
 import GiftModal from './components/GiftModal.vue'
+import StoryMap from './components/StoryMap.vue'
 
 const gameStore = useGameStore()
 const saveStore = useSaveStore()
@@ -19,6 +20,7 @@ const showSaveModal = ref(false)
 const showCards = ref(false)
 const showHistory = ref(false)
 const showGiftModal = ref(false)
+const showStoryMap = ref(false)
 
 const theme = computed(() => gameStore.darkMode ? 'dark' : 'light')
 
@@ -53,6 +55,7 @@ onMounted(() => {
       @toggle-cards="showCards = true"
       @toggle-history="showHistory = true"
       @toggle-theme="gameStore.toggleDarkMode()"
+      @toggle-story-map="showStoryMap = true"
       @reset="gameStore.resetGame()"
     />
     
@@ -72,6 +75,7 @@ onMounted(() => {
     <CardCollection v-if="showCards" @close="showCards = false" />
     <HistoryPanel v-if="showHistory" @close="showHistory = false" />
     <GiftModal v-if="showGiftModal" @close="showGiftModal = false" />
+    <StoryMap v-if="showStoryMap" @close="showStoryMap = false" />
   </div>
 </template>
 
